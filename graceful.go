@@ -1,10 +1,16 @@
-package main
+package graceful
 
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -58,7 +64,7 @@ func (sl StoppableListener) Accept() (c net.Conn, err error) {
 	}
 }
 
-func ListenAndServeTLS(addr string, certFile, keyFile string, handler http.Handler) error {
+func ListenAndServeTLS(addr string, certFile, keyFile string, handler http.Handler) {
 	srv := &http.Server{Addr: addr, Handler: handler}
 	if addr == "" {
 		addr = ":https"
@@ -75,19 +81,38 @@ func ListenAndServeTLS(addr string, certFile, keyFile string, handler http.Handl
 	config.Certificates = make([]tls.Certificate, 1)
 	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		return err
+		log.Println(err)
+		return
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return err
+		log.Println(err)
+		return
 	}
 	sl, err := New(ln)
 	if err != nil {
-		return err
+		log.Println(err)
+		return
 	}
 
 	tlsListener := tls.NewListener(sl, config)
-	return srv.Serve(tlsListener)
+	stop := make(chan os.Signal)
+	signal.Notify(stop, syscall.SIGINT)
+	var wg sync.WaitGroup
+	go func() {
+		wg.Add(1)
+		defer wg.Done()
+		srv.Serve(tlsListener)
+	}()
+	select {
+	case signal := <-stop:
+		fmt.Printf("Got signal:%v\n", signal)
+	}
+	fmt.Printf("Stopping listener\n")
+	sl.Stop()
+	fmt.Printf("Waiting on server\n")
+	wg.Wait()
+	//return srv.Serve(tlsListener)
 }
 func (sl *StoppableListener) Stop() {
 	close(sl.stop)
